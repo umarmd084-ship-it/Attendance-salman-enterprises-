@@ -1,0 +1,1746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#1d4ed8" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2216%22 fill=%22%232563eb%22/%3E%3Ctext x=%2232%22 y=%2245%22 font-size=%2242%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-weight=%22900%22 fill=%22white%22%3ES%3C/text%3E%3C/svg%3E" />
+  
+  <title>Mohd Umar × Salman Enterprises — Staff, Shops &amp; Collection</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @media print {
+      .no-print { display: none !important; }
+      body { background: #ffffff !important; }
+      .print-sheet { box-shadow: none !important; border: 1px solid #cbd5e1 !important; }
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { overflow-x: hidden; }
+    button, input, select, textarea { max-width: 100%; }
+    button { touch-action: manipulation; }
+    img { max-width: 100%; }
+    @media (max-width: 640px) {
+      main { min-width: 0; padding: 1rem !important; }
+      aside { padding: 1rem !important; }
+      aside nav { scrollbar-width: thin; }
+      main .rounded-2xl { padding: 1rem !important; }
+      table { min-width: 620px; }
+      input, select, textarea { font-size: 16px !important; }
+    }
+    .success-toast { position: fixed; z-index: 10000; top: 18px; left: 50%; transform: translateX(-50%); width: min(92vw, 430px); background: #ecfdf5; color: #065f46; border: 1px solid #6ee7b7; border-radius: 16px; box-shadow: 0 14px 40px #0f172a2b; padding: 15px 18px; display:flex; gap:12px; align-items:center; animation: toastIn .22s ease-out; }
+    .success-toast .tick { flex:0 0 34px; width:34px;height:34px;border-radius:50%;background:#10b981;color:white;display:grid;place-items:center;font-size:22px;font-weight:800; }
+    @keyframes toastIn { from { opacity:0; transform:translate(-50%,-12px); } to { opacity:1; transform:translate(-50%,0); } }
+    .brand-mark { width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#2563eb,#4f46e5);color:white;display:inline-grid;place-items:center;font-weight:900;font-size:24px;box-shadow:0 5px 14px #1d4ed833; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen antialiased">
+  <div id="app"></div>
+
+  <script>
+    const STORAGE_KEY = 'mohd_umar_salman_enterprises_erp_v2';
+    const SESSION_KEY = 'salman_enterprises_device_session_v1';
+    const OFFICE_END_HOUR = 19, OFFICE_END_MIN = 30; // auto check-out time (7:30 PM)
+    const ADMIN_TABS = ['users', 'shops', 'location', 'months'];
+    const ALL_TABS = ['dashboard', 'attendance', 'report', ...ADMIN_TABS];
+
+    // Report filters live only in this browser (not synced to the cloud)
+    const ui = { from: '', to: '', month: dateKeyOf(new Date()).slice(0, 7) };
+
+    function esc(v) {
+      return String(v ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function inr(n) {
+      return '₹' + Number(n || 0).toLocaleString('en-IN');
+    }
+
+    function haversineMeters(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const toRad = (deg) => (deg * Math.PI) / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return Math.round(R * c);
+    }
+
+    function defaultState() {
+      return {
+        brandName: 'Mohd Umar × Salman Enterprises',
+        tagline: 'Staff Attendance, Shop Visits, Sales & Collection',
+        geofenceRadiusMeters: 50,
+        baseOffice: {
+          name: 'Base Office — Salman Enterprises',
+          address: 'Prayagraj, Uttar Pradesh',
+          lat: 25.4358,
+          lng: 81.8463
+        },
+        users: [
+          {
+            id: 'admin-1',
+            name: 'Mohd Umar',
+            email: 'admin@salmanenterprises.in',
+            password: 'Admin@123',
+            role: 'Admin',
+            salaryPerDay: 0,
+            active: true
+          }
+        ],
+        configAt: 0,
+        purges: [],
+        shops: [],
+        attendance: [],
+        visits: [],
+        holidays: [],
+        currentUserId: null,
+        activeTab: 'attendance',
+        loginError: '',
+        statusBanner: ''
+      };
+    }
+
+    // Cleans up old/odd data (e.g. removed inventory section, shops without a salesman)
+    function normalizeState(s) {
+      const out = { ...defaultState(), ...s };
+      delete out.inventory;
+      delete out.invoices;
+      if (!ALL_TABS.includes(out.activeTab)) out.activeTab = 'attendance';
+      out.users = Array.isArray(out.users) && out.users.length ? out.users : defaultState().users;
+      out.attendance = Array.isArray(out.attendance) ? out.attendance : [];
+      // Remove any legacy photo data as this version no longer supports check-in photos.
+      out.attendance = out.attendance.map(({ checkInPhoto, ...record }) => record);
+      out.visits = Array.isArray(out.visits) ? out.visits : [];
+      out.holidays = Array.isArray(out.holidays) ? out.holidays.filter((h) => h && /^\d{4}-\d{2}-\d{2}$/.test(h.date || '')) : [];
+      out.purges = Array.isArray(out.purges) ? out.purges : [];
+      out.users = out.users.map((u) => ({ ...u, targetSale: Number(u.targetSale) || 0, targetCollection: Number(u.targetCollection) || 0 }));
+      applyPurges(out);
+      out.shops = (Array.isArray(out.shops) ? out.shops : []).map((sh) => ({
+        id: sh.id,
+        name: sh.name || 'Unnamed Shop',
+        area: sh.area || '',
+        lat: sh.lat === null || sh.lat === undefined || sh.lat === '' ? null : Number(sh.lat),
+        lng: sh.lng === null || sh.lng === undefined || sh.lng === '' ? null : Number(sh.lng),
+        salesmanId: sh.salesmanId || ''
+      }));
+      return out;
+    }
+
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return defaultState();
+        return normalizeState(JSON.parse(raw));
+      } catch (_) {
+        return defaultState();
+      }
+    }
+
+    let state = loadState();
+    try {
+      const savedSession = localStorage.getItem(SESSION_KEY);
+      if (savedSession && state.users.some(u => u.id === savedSession && u.active)) state.currentUserId = savedSession;
+      else { state.currentUserId = null; localStorage.removeItem(SESSION_KEY); }
+    } catch (_) { state.currentUserId = null; }
+    runAutoCheckout();
+
+    function saveState() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (_) {}
+      render();
+      if (typeof window.__pushErpCloudState === 'function') {
+        window.__pushErpCloudState();
+      }
+    }
+
+    // Use for admin changes to staff / shops / mapping / office pin.
+    // The newest change always wins when phones sync.
+    function saveConfig() {
+      state.configAt = Date.now();
+      saveState();
+    }
+
+    function syncBadge() {
+      const t = window.__syncText || 'Cloud: connecting...';
+      const bad = window.__syncBad ? 'text-red-400' : 'text-emerald-400';
+      return `<p id="syncStatus" class="text-xs ${bad} break-words">${esc(t)}</p>`;
+    }
+
+    function currentUser() {
+      return state.users.find((u) => u.id === state.currentUserId && u.active) || null;
+    }
+
+    function salesmanName(id) {
+      const u = state.users.find((x) => x.id === id);
+      return u ? u.name : 'Unassigned';
+    }
+
+    function getLiveGps() {
+      return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error('GPS is not supported on this browser/device.'));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            resolve({
+              lat: Number(pos.coords.latitude.toFixed(6)),
+              lng: Number(pos.coords.longitude.toFixed(6)),
+              accuracy: Math.round(pos.coords.accuracy || 10)
+            });
+          },
+          (err) => {
+            reject(new Error(err.message || 'Location permission denied. Please allow GPS access.'));
+          },
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+        );
+      });
+    }
+
+    function dateKeyOf(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function todayKey() {
+      return dateKeyOf(new Date());
+    }
+
+    function dayOffInfo(dateKey) {
+      const d = new Date(`${dateKey}T00:00:00`);
+      if (!dateKey || Number.isNaN(d.getTime())) return null;
+      if (d.getDay() === 0) return { type: 'sunday', label: 'Sunday — Weekly Off' };
+      const holiday = (state.holidays || []).find((h) => h.date === dateKey);
+      return holiday ? { type: 'holiday', label: holiday.reason || 'Holiday' } : null;
+    }
+
+    function assignHoliday(date, reason) {
+      const user = currentUser();
+      if (!user || user.role !== 'Admin') return;
+      if (!date) { state.statusBanner = 'Please select a holiday date.'; render(); return; }
+      const info = dayOffInfo(date);
+      if (info && info.type === 'sunday') {
+        state.statusBanner = 'Sunday is already a weekly day off for all staff.';
+        render();
+        return;
+      }
+      if ((state.holidays || []).some((h) => h.date === date)) {
+        state.statusBanner = `A holiday is already assigned for ${date}.`;
+        render();
+        return;
+      }
+      state.holidays = [...(state.holidays || []), {
+        id: 'holiday-' + Date.now(), date,
+        reason: String(reason || '').trim() || 'Office Holiday',
+        assignedAt: new Date().toISOString(), assignedBy: user.id
+      }].sort((a, b) => a.date.localeCompare(b.date));
+      state.statusBanner = `Holiday assigned for all staff on ${date}.`;
+      saveConfig();
+    }
+
+    function removeHoliday(id) {
+      const user = currentUser();
+      if (!user || user.role !== 'Admin') return;
+      const holiday = (state.holidays || []).find((h) => h.id === id);
+      if (!holiday || !confirm(`Remove the all-staff holiday on ${holiday.date}?`)) return;
+      state.holidays = state.holidays.filter((h) => h.id !== id);
+      state.statusBanner = `Holiday on ${holiday.date} removed. Normal attendance rules apply again.`;
+      saveConfig();
+    }
+
+    function localDateKey(iso) {
+      return dateKeyOf(new Date(iso));
+    }
+
+    function formatDuration(inIso, outIso) {
+      if (!inIso || !outIso) return 'In Progress';
+      const diffMs = new Date(outIso).getTime() - new Date(inIso).getTime();
+      if (diffMs <= 0) return '0h 0m';
+      const totalMins = Math.floor(diffMs / 60000);
+      const hrs = Math.floor(totalMins / 60);
+      const mins = totalMins % 60;
+      return `${hrs}h ${mins}m`;
+    }
+
+    function downloadCsv(filename, headers, rows) {
+      const csvContent = [headers, ...rows]
+        .map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
+        .join('\n');
+      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function exportAttendanceCsv(month) {
+      if (!currentUser() || currentUser().role !== 'Admin') { state.statusBanner = 'CSV export is available to admin only.'; render(); return; }
+      month = typeof month === 'string' ? month : '';
+      const headers = [
+        'Date', 'Worker Name', 'Email', 'Check-In Time', 'Check-In Distance (m)',
+        'Check-Out Time', 'Check-Out Distance (m)', 'Shift Duration', 'Daily Rate (INR)', 'Status',
+        'Check-In Lat', 'Check-In Lng', 'Check-Out Lat', 'Check-Out Lng', 'Auto Check-Out'
+      ];
+      const rows = attList(month).map((rec) => {
+        const user = state.users.find((u) => u.id === rec.userId) || {};
+        const dur = formatDuration(rec.checkInAt, rec.checkOutAt);
+        const status = rec.autoCheckout ? 'Auto Check-Out 7:30 PM' : rec.checkInAt && rec.checkOutAt ? 'Full Shift Logged' : 'Check-In Only';
+        return [
+          rec.date,
+          user.name || rec.userName || '',
+          user.email || '',
+          rec.checkInAt ? new Date(rec.checkInAt).toLocaleString('en-IN') : '',
+          rec.checkInDistance ?? '',
+          rec.checkOutAt ? new Date(rec.checkOutAt).toLocaleString('en-IN') : '',
+          rec.checkOutDistance ?? '',
+          dur,
+          user.salaryPerDay || 0,
+          status,
+          rec.checkInLat ?? '', rec.checkInLng ?? '', rec.checkOutLat ?? '', rec.checkOutLng ?? '',
+          rec.autoCheckout ? 'Yes' : ''
+        ];
+      });
+      downloadCsv(`attendance_salary_${month || todayKey()}.csv`, headers, rows);
+    }
+
+    // ---------- Shop report (sale & collection per shop) ----------
+    function visitsVisibleTo(user) {
+      return user.role === 'Admin' ? state.visits : state.visits.filter((v) => v.userId === user.id);
+    }
+
+    function visitInRange(v) {
+      const d = localDateKey(v.loggedAt);
+      return (!ui.from || d >= ui.from) && (!ui.to || d <= ui.to);
+    }
+
+    function buildShopReport(user) {
+      const rows = new Map();
+      const scopeShops = user.role === 'Admin'
+        ? state.shops
+        : state.shops.filter((s) => s.salesmanId === user.id);
+      scopeShops.forEach((s) => {
+        rows.set(s.id, { name: s.name, area: s.area, salesman: salesmanName(s.salesmanId), visits: 0, sale: 0, collection: 0 });
+      });
+      visitsVisibleTo(user).filter(visitInRange).forEach((v) => {
+        const key = v.shopId || 'name:' + v.shopName;
+        let r = rows.get(key);
+        if (!r) {
+          const s = state.shops.find((x) => x.id === v.shopId);
+          r = {
+            name: s ? s.name : v.shopName,
+            area: s ? s.area : '',
+            salesman: s ? salesmanName(s.salesmanId) : 'Shop removed',
+            visits: 0, sale: 0, collection: 0
+          };
+          rows.set(key, r);
+        }
+        r.visits += 1;
+        r.sale += Number(v.saleAmount) || 0;
+        r.collection += Number(v.collectionAmount) || 0;
+      });
+      return [...rows.values()].sort((a, b) => b.sale - a.sale);
+    }
+
+    function exportShopReportCsv() {
+      const user = currentUser();
+      if (!user || user.role !== 'Admin') { state.statusBanner = 'CSV export is available to admin only.'; render(); return; }
+      const rep = buildShopReport(user);
+      const headers = ['Shop', 'Area', 'Salesman (current)', 'Visits', 'Sale (INR)', 'Collection (INR)'];
+      const rows = rep.map((r) => [r.name, r.area, r.salesman, r.visits, r.sale, r.collection]);
+      downloadCsv(`shop_sale_collection_${todayKey()}.csv`, headers, rows);
+    }
+
+    // ---------- Attendance & visit actions ----------
+    async function handleCheckIn() {
+      const user = currentUser();
+      if (!user) return;
+      const date = todayKey();
+      const dayOff = dayOffInfo(date);
+      if (dayOff) {
+        state.statusBanner = `No check-in today: ${dayOff.label}.`;
+        render();
+        return;
+      }
+      const nowT = new Date();
+      if (nowT.getHours() * 60 + nowT.getMinutes() >= OFFICE_END_HOUR * 60 + OFFICE_END_MIN) {
+        state.statusBanner = 'Office time khatam ho gaya (7:30 PM ke baad check-in nahi hota).';
+        render();
+        return;
+      }
+      try {
+        const gps = await getLiveGps();
+        const dist = haversineMeters(gps.lat, gps.lng, state.baseOffice.lat, state.baseOffice.lng);
+        const radius = Number(state.geofenceRadiusMeters) || 50;
+        if (dist > radius) {
+          state.statusBanner = `Check-In Blocked: You are ${dist}m away from Base Office (allowed within ${radius}m).`;
+          render();
+          return;
+        }
+        const existing = state.attendance.find((a) => a.userId === user.id && a.date === date);
+        if (existing) {
+          state.statusBanner = `Already checked in today at ${new Date(existing.checkInAt).toLocaleTimeString('en-IN')}.`;
+          render();
+          return;
+        }
+        state.attendance.unshift({
+          id: 'att-' + Date.now(),
+          userId: user.id,
+          userName: user.name,
+          date,
+          checkInAt: new Date().toISOString(),
+          checkInLat: gps.lat,
+          checkInLng: gps.lng,
+          checkInDistance: dist,
+          checkOutAt: null,
+          checkOutDistance: null
+        });
+        state.statusBanner = `Office Check-In recorded (${dist}m from Base Office). You can now visit your shops.`;
+        state.successToast = 'Office check-in successful! Attendance has been recorded.';
+        saveState();
+      } catch (err) {
+        state.statusBanner = err.message;
+        render();
+      }
+    }
+
+    async function handleCheckOut() {
+      const user = currentUser();
+      if (!user) return;
+      const date = todayKey();
+      const dayOff = dayOffInfo(date);
+      if (dayOff) {
+        state.statusBanner = `No check-out today: ${dayOff.label}.`;
+        render();
+        return;
+      }
+      const rec = state.attendance.find((a) => a.userId === user.id && a.date === date);
+      if (!rec) {
+        state.statusBanner = 'Please complete Base Office Check-In first before checking out.';
+        render();
+        return;
+      }
+      if (rec.checkOutAt) {
+        state.statusBanner = 'You have already checked out from the Base Office today.';
+        render();
+        return;
+      }
+      try {
+        const gps = await getLiveGps();
+        const dist = haversineMeters(gps.lat, gps.lng, state.baseOffice.lat, state.baseOffice.lng);
+        const radius = Number(state.geofenceRadiusMeters) || 50;
+        if (dist > radius) {
+          state.statusBanner = `Check-Out Locked: Return within ${radius}m of Base Office first (currently ${dist}m away).`;
+          render();
+          return;
+        }
+        rec.checkOutAt = new Date().toISOString();
+        rec.checkOutDistance = dist;
+        rec.checkOutLat = gps.lat;
+        rec.checkOutLng = gps.lng;
+        state.statusBanner = `Office Check-Out recorded (${dist}m from Base Office). Total shift: ${formatDuration(rec.checkInAt, rec.checkOutAt)}.`;
+        saveState();
+      } catch (err) {
+        state.statusBanner = err.message;
+        render();
+      }
+    }
+
+    async function handleLogVisit(e) {
+      e.preventDefault();
+      const user = currentUser();
+      if (!user) return;
+      const shopId = document.getElementById('visitShopId').value;
+      const shop = state.shops.find((s) => s.id === shopId);
+      if (!shop) {
+        state.statusBanner = 'Please select a shop first.';
+        render();
+        return;
+      }
+      if (user.role !== 'Admin' && shop.salesmanId !== user.id) {
+        state.statusBanner = 'This shop is not mapped to you.';
+        render();
+        return;
+      }
+      const saleAmount = Math.max(0, Number(document.getElementById('visitSale').value) || 0);
+      const collectionAmount = Math.max(0, Number(document.getElementById('visitCollection').value) || 0);
+      const notes = document.getElementById('visitNotes').value.trim();
+      try {
+        const gps = await getLiveGps();
+        const hasPin = shop.lat !== null && shop.lng !== null && !isNaN(shop.lat) && !isNaN(shop.lng);
+        const dist = hasPin ? haversineMeters(gps.lat, gps.lng, shop.lat, shop.lng) : null;
+        state.visits.unshift({
+          id: 'vis-' + Date.now(),
+          userId: user.id,
+          userName: user.name,
+          shopId: shop.id,
+          shopName: shop.name,
+          saleAmount,
+          collectionAmount,
+          notes,
+          lat: gps.lat,
+          lng: gps.lng,
+          distanceToShop: dist,
+          loggedAt: new Date().toISOString()
+        });
+        state.statusBanner = `Visit logged at ${shop.name}: Sale ${inr(saleAmount)}, Collection ${inr(collectionAmount)}.`;
+        saveState();
+      } catch (err) {
+        state.statusBanner = err.message;
+        render();
+      }
+    }
+
+    // ================= Monthly target / achievement, auto checkout, month purge =================
+    function monthOfIso(iso) {
+      const d = new Date(iso);
+      return isNaN(d) ? '' : dateKeyOf(d).slice(0, 7);
+    }
+    function monthLabel(m) {
+      const [y, mo] = m.split('-').map(Number);
+      return new Date(y, mo - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+    }
+
+    // --- month delete (cloud safe): a purge marker removes old records on every phone ---
+    function isPurged(purges, iso, type) {
+      const t = new Date(iso).getTime();
+      if (isNaN(t)) return false;
+      const p = (purges || []).filter((x) => x.month === monthOfIso(iso) && (!x.type || x.type === type))
+        .sort((a,b) => Number(b.at) - Number(a.at))[0];
+      return !!p && t <= Number(p.at);
+    }
+    function applyPurges(s) {
+      if (!s.purges || !s.purges.length) return;
+      s.attendance = s.attendance.filter((a) => !isPurged(s.purges, a.checkInAt || a.date, 'attendance'));
+      s.visits = s.visits.filter((v) => !isPurged(s.purges, v.loggedAt, 'sales'));
+    }
+    function unionPurges(a, b) {
+      const m = new Map();
+      [...(a || []), ...(b || [])].forEach((p) => {
+        const key = p.month + ':' + (p.type || 'all');
+        const c = m.get(key);
+        if (!c || Number(p.at) > Number(c.at)) m.set(key, { month: p.month, at: Number(p.at), ...(p.type ? {type:p.type} : {}) });
+      });
+      return [...m.values()];
+    }
+
+    // --- auto check-out at 7:30 PM (also fixes forgotten check-outs of earlier days) ---
+    function runAutoCheckout() {
+      const now = new Date();
+      let changed = false;
+      state.attendance.forEach((a) => {
+        if (a.checkOutAt || !a.checkInAt || !a.date || dayOffInfo(a.date)) return;
+        const [y, m, d] = a.date.split('-').map(Number);
+        const cutoff = new Date(y, m - 1, d, OFFICE_END_HOUR, OFFICE_END_MIN, 0);
+        if (now >= cutoff) {
+          const inAt = new Date(a.checkInAt);
+          a.checkOutAt = (inAt > cutoff ? inAt : cutoff).toISOString();
+          a.checkOutDistance = null;
+          a.autoCheckout = true;
+          changed = true;
+        }
+      });
+      return changed;
+    }
+
+    // Absences are counted only for completed working days. Sundays and assigned
+    // holidays are excluded; the current day is counted only after 7:30 PM.
+    function attendanceStats(userId, month) {
+      const match = /^(\d{4})-(\d{2})$/.exec(month || '');
+      if (!match) return { workingDays: 0, presentDays: 0, absentDays: 0 };
+      const year = Number(match[1]), monthNo = Number(match[2]);
+      const today = new Date();
+      const todayMonth = dateKeyOf(today).slice(0, 7);
+      if (month > todayMonth) return { workingDays: 0, presentDays: 0, absentDays: 0 };
+      const totalDays = new Date(year, monthNo, 0).getDate();
+      let endDay = totalDays;
+      if (month === todayMonth) {
+        endDay = today.getDate();
+        const mins = today.getHours() * 60 + today.getMinutes();
+        if (mins < OFFICE_END_HOUR * 60 + OFFICE_END_MIN) endDay -= 1;
+      }
+      let workingDays = 0, presentDays = 0;
+      const attended = new Set(state.attendance.filter((a) => a.userId === userId && a.checkInAt && String(a.date).startsWith(month)).map((a) => a.date));
+      for (let day = 1; day <= endDay; day++) {
+        const key = `${month}-${String(day).padStart(2, '0')}`;
+        if (dayOffInfo(key)) continue;
+        workingDays += 1;
+        if (attended.has(key)) presentDays += 1;
+      }
+      return { workingDays, presentDays, absentDays: Math.max(0, workingDays - presentDays) };
+    }
+
+    // --- achievement numbers ---
+    function achievement(userId, month) {
+      let sale = 0, collection = 0, visits = 0;
+      state.visits.forEach((v) => {
+        if (v.userId !== userId || monthOfIso(v.loggedAt) !== month) return;
+        sale += Number(v.saleAmount) || 0;
+        collection += Number(v.collectionAmount) || 0;
+        visits += 1;
+      });
+      const attendance = attendanceStats(userId, month);
+      return { sale, collection, visits, days: attendance.presentDays, absentDays: attendance.absentDays, workingDays: attendance.workingDays };
+    }
+    function achRows(user, month) {
+      const list = user.role === 'Admin'
+        ? state.users.filter((u) => u.active)
+        : [user];
+      return list
+        .filter((u) => user.role !== 'Admin' || u.role !== 'Admin')
+        .map((u) => ({ u, a: achievement(u.id, month) }))
+        .sort((x, y) => y.a.sale - x.a.sale);
+    }
+    function monthsWithData() {
+      const set = new Set();
+      state.visits.forEach((v) => { const m = monthOfIso(v.loggedAt); if (m) set.add(m); });
+      state.attendance.forEach((a) => { if (a.date) set.add(String(a.date).slice(0, 7)); });
+      return [...set].sort().reverse();
+    }
+
+    function barColor(p) { return p === null ? 'bg-slate-300' : p >= 100 ? 'bg-emerald-500' : p >= 60 ? 'bg-amber-500' : 'bg-rose-500'; }
+    function txtColor(p) { return p === null ? 'text-slate-500' : p >= 100 ? 'text-emerald-600' : p >= 60 ? 'text-amber-600' : 'text-rose-600'; }
+    function pctOf(a, t) { return t > 0 ? Math.round((a / t) * 100) : null; }
+
+    function progressBlock(label, ach, target) {
+      const p = pctOf(ach, target);
+      return `
+        <div class="flex justify-between items-end text-sm">
+          <span class="font-semibold text-slate-700">${label}</span>
+          <span class="text-xs text-slate-500">${target > 0 ? 'Target ' + inr(target) : 'Target not set'}</span>
+        </div>
+        <div class="text-3xl font-extrabold mt-1">${inr(ach)} ${p !== null ? `<span class="text-base font-bold ${txtColor(p)}">${p}%</span>` : ''}</div>
+        <div class="h-3.5 rounded-full bg-slate-100 mt-3 overflow-hidden"><div class="h-full ${barColor(p)} rounded-full" style="width:${p === null ? 0 : Math.min(100, p)}%"></div></div>
+        ${target > 0 ? `<div class="text-xs text-slate-500 mt-1.5">${ach >= target ? '🎉 Target achieved! Extra ' + inr(ach - target) : 'Remaining ' + inr(target - ach)}</div>` : ''}`;
+    }
+    function miniBar(ach, target) {
+      const p = pctOf(ach, target);
+      return `<div class="flex items-center gap-2 mt-1"><div class="h-2 w-24 rounded-full bg-slate-100 overflow-hidden"><div class="h-full ${barColor(p)}" style="width:${p === null ? 0 : Math.min(100, p)}%"></div></div><span class="text-xs font-semibold ${txtColor(p)}">${p === null ? '—' : p + '%'}</span></div>`;
+    }
+
+    function renderAchievement(user) {
+      const isAdmin = user.role === 'Admin';
+      const rows = achRows(user, ui.month);
+      const now = new Date();
+      const isCur = ui.month === dateKeyOf(now).slice(0, 7);
+      const [y, mo] = ui.month.split('-').map(Number);
+      const daysLeft = isCur ? new Date(y, mo, 0).getDate() - now.getDate() + 1 : 0;
+      const card = (inner) => `<div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">${inner}</div>`;
+
+      const head = `
+        <div class="rounded-2xl p-6 text-white bg-gradient-to-r from-blue-700 to-indigo-600 shadow-sm flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p class="text-xs uppercase tracking-wider text-blue-200 font-semibold">Monthly Target vs Achievement</p>
+            <h3 class="text-2xl font-bold mt-1">${esc(monthLabel(ui.month))}</h3>
+            <p class="text-sm text-blue-100 mt-1">${isCur ? daysLeft + ' day(s) left this month' : 'Past month'}</p>
+          </div>
+          <div class="no-print flex flex-wrap items-center gap-2">
+            <input id="monthPick" type="month" value="${esc(ui.month)}" class="px-3 py-2 rounded-lg text-slate-900 text-sm" />
+            ${isAdmin ? `<button id="exportAchBtn" class="px-3 py-2 rounded-lg bg-white/15 hover:bg-white/25 text-xs font-semibold cursor-pointer">Download CSV</button>` : ''}
+          </div>
+        </div>`;
+
+      if (!isAdmin) {
+        const { u, a } = rows[0];
+        const need = isCur && daysLeft && u.targetSale > a.sale ? Math.ceil((u.targetSale - a.sale) / daysLeft) : 0;
+        const myShops = state.shops.filter((s) => s.salesmanId === user.id).length;
+        const stat = (l, v) => `<div class="p-4 rounded-xl bg-white border border-slate-200 text-center shadow-sm"><div class="text-xs text-slate-500 font-semibold">${l}</div><div class="text-xl font-bold mt-1">${v}</div></div>`;
+        return `${head}
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            ${card(progressBlock('Sale', a.sale, u.targetSale))}
+            ${card(progressBlock('Collection', a.collection, u.targetCollection))}
+          </div>
+          ${need ? `<div class="p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-900">Target poora karne ke liye ab roz average <strong>${inr(need)}</strong> sale chahiye.</div>` : ''}
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">${stat('Visits', a.visits)}${stat('Days Present', a.days)}${stat('Days Absent', a.absentDays)}${stat('My Shops', myShops)}</div>`;
+      }
+
+      const sum = (f) => rows.reduce((t, r) => t + f(r), 0);
+      const medals = ['🥇', '🥈', '🥉'];
+      const cell = (ach, t) => `<div class="font-semibold">${inr(ach)} <span class="text-xs text-slate-500 font-normal">/ ${t > 0 ? inr(t) : '—'}</span></div>${miniBar(ach, t)}`;
+      return `${head}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          ${card(progressBlock('Team Sale', sum((r) => r.a.sale), sum((r) => r.u.targetSale)))}
+          ${card(progressBlock('Team Collection', sum((r) => r.a.collection), sum((r) => r.u.targetCollection)))}
+        </div>
+        ${card(`
+          <h3 class="text-lg font-bold mb-3">Salesman-wise Achievement</h3>
+          <div class="overflow-x-auto"><table class="w-full text-sm text-left border-collapse">
+            <thead><tr class="border-b border-slate-200 text-slate-500">
+              <th class="py-2.5 pr-4">Salesman</th><th class="py-2.5 pr-4">Sale / Target</th><th class="py-2.5 pr-4">Collection / Target</th><th class="py-2.5 pr-4 text-right">Visits</th><th class="py-2.5 pr-4 text-right">Present</th><th class="py-2.5 text-right">Absent</th>
+            </tr></thead>
+            <tbody>${rows.length ? rows.map((r, i) => `
+              <tr class="border-b border-slate-100">
+                <td class="py-3 pr-4 font-medium">${medals[i] && r.a.sale > 0 ? medals[i] + ' ' : ''}${esc(r.u.name)}<div class="text-xs text-slate-500">${esc(r.u.role)}</div></td>
+                <td class="py-3 pr-4">${cell(r.a.sale, r.u.targetSale)}</td>
+                <td class="py-3 pr-4">${cell(r.a.collection, r.u.targetCollection)}</td>
+                <td class="py-3 pr-4 text-right">${r.a.visits}</td>
+                <td class="py-3 pr-4 text-right text-emerald-700 font-semibold">${r.a.days}</td>
+                <td class="py-3 text-right ${r.a.absentDays ? 'text-red-600 font-bold' : 'text-slate-500'}">${r.a.absentDays}</td>
+              </tr>`).join('') : '<tr><td colspan="6" class="py-6 text-center text-slate-400">No staff yet.</td></tr>'}
+            </tbody></table></div>
+          <p class="text-xs text-slate-500 mt-3">Targets set karne ke liye "Manage Staff &amp; Logins" kholein.</p>`)}`;
+    }
+
+    function renderHolidayManager() {
+      const holidays = [...(state.holidays || [])].sort((a, b) => a.date.localeCompare(b.date));
+      return `
+        <section class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div><h3 class="text-lg font-bold text-slate-900">Assign Staff Holiday</h3>
+              <p class="text-xs text-slate-500 mt-1">A holiday applies to every staff member. Sundays are automatically weekly off.</p></div>
+            <span class="text-xs rounded-full bg-blue-50 text-blue-700 px-3 py-1 font-semibold">Admin only</span>
+          </div>
+          <form id="holidayForm" class="grid grid-cols-1 sm:grid-cols-[1fr_1.4fr_auto] gap-2 items-end">
+            <label class="text-xs font-semibold text-slate-600">Holiday date
+              <input id="holidayDate" type="date" required class="mt-1 block w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+            </label>
+            <label class="text-xs font-semibold text-slate-600">Reason / name (optional)
+              <input id="holidayReason" type="text" maxlength="80" placeholder="e.g. Festival Holiday" class="mt-1 block w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+            </label>
+            <button type="submit" class="px-4 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold">Assign Holiday to All Staff</button>
+          </form>
+          <div class="border-t border-slate-100 pt-3">
+            <p class="text-sm font-semibold text-slate-700 mb-2">Assigned holidays</p>
+            ${holidays.length ? `<div class="space-y-2">${holidays.map((h) => `
+              <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+                <div><span class="text-sm font-semibold">${esc(h.date)}</span><span class="text-sm text-slate-600"> — ${esc(h.reason || 'Office Holiday')}</span></div>
+                <button type="button" data-delete-holiday="${esc(h.id)}" class="text-xs font-semibold text-red-600 underline">Remove</button>
+              </div>`).join('')}</div>` : '<p class="text-xs text-slate-400">No assigned holidays yet.</p>'}
+          </div>
+        </section>`;
+    }
+
+    function renderAbsenceSummary(user) {
+      const staff = user.role === 'Admin' ? state.users.filter((u) => u.active && u.role !== 'Admin') : [user];
+      const statsRows = staff.map((u) => ({ u, stats: attendanceStats(u.id, ui.month) }));
+      return `
+        <section class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div><h3 class="text-lg font-bold text-slate-900">Monthly Attendance &amp; Absence</h3>
+              <p class="text-xs text-slate-500 mt-1">Sunday and admin-assigned holidays are excluded. The current day is counted after 7:30 PM.</p></div>
+            <label class="text-xs font-semibold text-slate-600">Month
+              <input id="attendanceMonthPick" type="month" value="${esc(ui.month)}" class="ml-1 px-2 py-1.5 rounded-lg border border-slate-300 text-sm" />
+            </label>
+          </div>
+          <div class="overflow-x-auto"><table class="w-full text-sm text-left border-collapse">
+            <thead><tr class="border-b border-slate-200 text-slate-500">
+              ${user.role === 'Admin' ? '<th class="py-2.5 pr-4">Staff member</th>' : ''}
+              <th class="py-2.5 pr-4 text-right">Working days</th><th class="py-2.5 pr-4 text-right">Present</th><th class="py-2.5 text-right">Absent</th>
+            </tr></thead>
+            <tbody>${statsRows.length ? statsRows.map((r) => `
+              <tr class="border-b border-slate-100">
+                ${user.role === 'Admin' ? `<td class="py-3 pr-4 font-medium">${esc(r.u.name)}</td>` : ''}
+                <td class="py-3 pr-4 text-right">${r.stats.workingDays}</td><td class="py-3 pr-4 text-right text-emerald-700 font-semibold">${r.stats.presentDays}</td><td class="py-3 text-right ${r.stats.absentDays ? 'text-red-600 font-bold' : 'text-slate-500'}">${r.stats.absentDays}</td>
+              </tr>`).join('') : `<tr><td colspan="${user.role === 'Admin' ? 4 : 3}" class="py-5 text-center text-slate-400">No active staff members.</td></tr>`}</tbody>
+          </table></div>
+        </section>`;
+    }
+
+    function renderMonths() {
+      const months = monthsWithData();
+      const rowsHtml = months.map((m) => {
+        const vs = state.visits.filter((v) => monthOfIso(v.loggedAt) === m);
+        const at = state.attendance.filter((a) => String(a.date).startsWith(m));
+        const sale = vs.reduce((t, v) => t + (Number(v.saleAmount) || 0), 0);
+        const col = vs.reduce((t, v) => t + (Number(v.collectionAmount) || 0), 0);
+        return `<tr class="border-b border-slate-100">
+          <td class="py-3 pr-4 font-semibold">${esc(monthLabel(m))}</td>
+          <td class="py-3 pr-4 text-right">${vs.length}</td>
+          <td class="py-3 pr-4 text-right">${inr(sale)}</td>
+          <td class="py-3 pr-4 text-right">${inr(col)}</td>
+          <td class="py-3 pr-4 text-right">${at.length}</td>
+          <td class="py-3 text-right whitespace-nowrap">
+            <button data-bk-visits="${m}" class="bk-visits-btn text-xs font-semibold text-blue-700 hover:underline cursor-pointer mr-3">Visits CSV</button>
+            <button data-bk-att="${m}" class="bk-att-btn text-xs font-semibold text-blue-700 hover:underline cursor-pointer mr-3">Attendance CSV</button>
+            <button data-del-month="${m}" data-del-type="attendance" class="del-month-btn text-xs font-semibold text-red-600 hover:underline cursor-pointer mr-2">Delete Attendance</button>
+            <button data-del-month="${m}" data-del-type="sales" class="del-month-btn text-xs font-semibold text-red-600 hover:underline cursor-pointer">Delete Sales</button>
+          </td></tr>`;
+      }).join('');
+      return `
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div><h3 class="text-lg font-bold">Month-wise Data &amp; Delete</h3>
+            <p class="text-xs text-slate-500 mt-1">Choose exactly what to delete: attendance OR sales/collection visits. Shops, staff and targets remain safe. Deletion is permanent and syncs to devices.</p></div>
+            <button id="exportShopsBtn" class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold hover:bg-slate-50 cursor-pointer">Shops + GPS CSV</button>
+          </div>
+          <div class="overflow-x-auto"><table class="w-full text-sm text-left border-collapse">
+            <thead><tr class="border-b border-slate-200 text-slate-500">
+              <th class="py-2.5 pr-4">Month</th><th class="py-2.5 pr-4 text-right">Visits</th><th class="py-2.5 pr-4 text-right">Sale</th><th class="py-2.5 pr-4 text-right">Collection</th><th class="py-2.5 pr-4 text-right">Attendance</th><th class="py-2.5 text-right">Action</th>
+            </tr></thead>
+            <tbody>${rowsHtml || '<tr><td colspan="6" class="py-6 text-center text-slate-400">No data yet.</td></tr>'}</tbody>
+          </table></div>
+        </div>`;
+    }
+
+    function deleteMonth(m, type) {
+      if (!currentUser() || currentUser().role !== 'Admin') return;
+      const isAttendance = type === 'attendance';
+      const count = isAttendance
+        ? state.attendance.filter(a => String(a.date).startsWith(m)).length
+        : state.visits.filter(v => monthOfIso(v.loggedAt) === m).length;
+      const label = isAttendance ? 'attendance records' : 'sales and collection visit records';
+      if (!count) { state.statusBanner = `No ${label} found for ${monthLabel(m)}.`; render(); return; }
+      if (!window.confirm(`Permanently delete ${count} ${label} for ${monthLabel(m)}? The other data type will remain untouched.`)) return;
+      state.purges = unionPurges(state.purges, [{ month: m, at: Date.now(), type }]);
+      applyPurges(state);
+      state.statusBanner = `${count} ${label} deleted for ${monthLabel(m)}.`;
+      saveConfig();
+    }
+
+    // --- CSV exports ---
+    function attList(month) {
+      const u = currentUser();
+      if (!u) return [];
+      let l = u.role === 'Admin' ? state.attendance : state.attendance.filter((a) => a.userId === u.id);
+      if (month) l = l.filter((a) => String(a.date).startsWith(month));
+      return l;
+    }
+    function mapsLink(lat, lng) {
+      return lat === null || lat === undefined || lat === '' ? '' : `https://www.google.com/maps?q=${lat},${lng}`;
+    }
+    function exportVisitsCsv(list, filename) {
+      if (!currentUser() || currentUser().role !== 'Admin') { state.statusBanner = 'CSV export is available to admin only.'; render(); return; }
+      const headers = ['Date', 'Time', 'Salesman', 'Shop', 'Area', 'Sale (INR)', 'Collection (INR)', 'Notes', 'GPS Latitude', 'GPS Longitude', 'Distance from Shop Pin (m)', 'Google Maps Link'];
+      const rows = list.map((v) => {
+        const s = state.shops.find((x) => x.id === v.shopId) || {};
+        return [localDateKey(v.loggedAt), new Date(v.loggedAt).toLocaleTimeString('en-IN'), v.userName, v.shopName, s.area || '',
+          v.saleAmount, v.collectionAmount, v.notes || '', v.lat ?? '', v.lng ?? '', v.distanceToShop ?? '', mapsLink(v.lat, v.lng)];
+      });
+      downloadCsv(filename, headers, rows);
+    }
+    function exportShopsCsv() {
+      if (!currentUser() || currentUser().role !== 'Admin') { state.statusBanner = 'CSV export is available to admin only.'; render(); return; }
+      const headers = ['Shop', 'Area', 'Salesman', 'Latitude', 'Longitude', 'Google Maps Link'];
+      const rows = state.shops.map((s) => [s.name, s.area, salesmanName(s.salesmanId), s.lat ?? '', s.lng ?? '', mapsLink(s.lat, s.lng)]);
+      downloadCsv(`shops_gps_${todayKey()}.csv`, headers, rows);
+    }
+    function exportAchievementCsv(month) {
+      const user = currentUser();
+      if (!user || user.role !== 'Admin') { state.statusBanner = 'CSV export is available to admin only.'; render(); return; }
+      const headers = ['Month', 'Salesman', 'Sale Target', 'Sale Achieved', 'Sale %', 'Collection Target', 'Collection Achieved', 'Collection %', 'Visits', 'Working Days', 'Days Present', 'Days Absent'];
+      const rows = achRows(user, month).map((r) => [
+        monthLabel(month), r.u.name, r.u.targetSale || 0, r.a.sale, pctOf(r.a.sale, r.u.targetSale) ?? '',
+        r.u.targetCollection || 0, r.a.collection, pctOf(r.a.collection, r.u.targetCollection) ?? '', r.a.visits, r.a.workingDays, r.a.days, r.a.absentDays
+      ]);
+      downloadCsv(`achievement_${month}.csv`, headers, rows);
+    }
+
+    function bindExtras() {
+      const on = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+      const mp = document.getElementById('monthPick');
+      if (mp) mp.addEventListener('change', () => { if (mp.value) { ui.month = mp.value; render(); } });
+      const attendanceMonthPick = document.getElementById('attendanceMonthPick');
+      if (attendanceMonthPick) attendanceMonthPick.addEventListener('change', () => { if (attendanceMonthPick.value) { ui.month = attendanceMonthPick.value; render(); } });
+      const holidayForm = document.getElementById('holidayForm');
+      if (holidayForm) holidayForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        assignHoliday(document.getElementById('holidayDate').value, document.getElementById('holidayReason').value);
+      });
+      document.querySelectorAll('[data-delete-holiday]').forEach((b) => b.addEventListener('click', () => removeHoliday(b.getAttribute('data-delete-holiday'))));
+      on('exportAchBtn', () => exportAchievementCsv(ui.month));
+      on('exportShopsBtn', exportShopsCsv);
+      on('exportVisitsBtn', () => {
+        const u = currentUser();
+        if (u && u.role === 'Admin') exportVisitsCsv(visitsVisibleTo(u).filter(visitInRange), `visits_gps_${todayKey()}.csv`);
+      });
+      document.querySelectorAll('.bk-visits-btn').forEach((b) => b.addEventListener('click', () => {
+        const m = b.getAttribute('data-bk-visits');
+        exportVisitsCsv(state.visits.filter((v) => monthOfIso(v.loggedAt) === m), `visits_${m}.csv`);
+      }));
+      document.querySelectorAll('.bk-att-btn').forEach((b) => b.addEventListener('click', () => exportAttendanceCsv(b.getAttribute('data-bk-att'))));
+      document.querySelectorAll('.del-month-btn').forEach((b) => b.addEventListener('click', () => deleteMonth(b.getAttribute('data-del-month'), b.getAttribute('data-del-type'))));
+      document.querySelectorAll('.save-target-btn').forEach((b) => b.addEventListener('click', () => {
+        const id = b.getAttribute('data-save-target');
+        const u = state.users.find((x) => x.id === id);
+        if (!u) return;
+        u.targetSale = Math.max(0, Number(document.querySelector(`[data-tsale="${id}"]`).value) || 0);
+        u.targetCollection = Math.max(0, Number(document.querySelector(`[data-tcoll="${id}"]`).value) || 0);
+        state.statusBanner = `Monthly target saved for ${u.name}: Sale ${inr(u.targetSale)}, Collection ${inr(u.targetCollection)}.`;
+        saveConfig();
+      }));
+    }
+
+    // ---------- Screens ----------
+    function renderLogin() {
+      return `
+        <div class="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-blue-900 via-blue-700 to-indigo-600">
+          <div class="w-full max-w-md bg-white rounded-2xl shadow-lg border border-slate-200 p-8">
+            <div class="mb-6">
+              <div class="brand-mark mb-3" aria-label="Salman Enterprises S logo">S</div>
+              <p class="text-xs font-semibold uppercase tracking-wider text-blue-700">Staff Portal</p>
+              <h1 class="text-2xl font-bold text-slate-900 mt-1">${esc(state.brandName)}</h1>
+              <p class="text-sm text-slate-500 mt-1">${esc(state.tagline)}</p>
+            </div>
+
+            ${state.loginError ? `
+              <div class="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+                ${esc(state.loginError)}
+              </div>
+            ` : ''}
+
+            <form id="loginForm" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Email Address</label>
+                <input id="loginEmail" type="email" required placeholder="name@salmanenterprises.in"
+                  class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-600" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Password</label>
+                <input id="loginPassword" type="password" required placeholder="••••••••"
+                  class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-600" />
+              </div>
+              <button type="submit"
+                class="w-full py-2.5 px-4 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold transition cursor-pointer">
+                Sign In
+              </button>
+            </form>
+            <div class="mt-4">${syncBadge().replace('text-emerald-400','text-emerald-700').replace('text-red-400','text-red-600')}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderDashboard(user) {
+      const isAdmin = user.role === 'Admin';
+      let tab = ALL_TABS.includes(state.activeTab) ? state.activeTab : 'attendance';
+      if (!isAdmin && ADMIN_TABS.includes(tab)) tab = 'attendance';
+
+      const todayRec = state.attendance.find((a) => a.userId === user.id && a.date === todayKey());
+      const visibleAttendance = isAdmin
+        ? state.attendance
+        : state.attendance.filter((a) => a.userId === user.id);
+      const visibleVisits = visitsVisibleTo(user);
+      const myShops = isAdmin ? state.shops : state.shops.filter((s) => s.salesmanId === user.id);
+      const assignableUsers = state.users.filter((u) => u.active);
+
+      const navBtn = (id, label) => `
+        <button data-tab="${id}" class="nav-btn whitespace-nowrap md:w-full text-left px-3.5 py-2.5 rounded-lg font-medium ${tab === id ? 'bg-blue-700 text-white' : 'text-slate-300 hover:bg-slate-800'}">
+          ${label}
+        </button>`;
+
+      // report numbers
+      const report = tab === 'report' ? buildShopReport(user) : [];
+      const totalSale = report.reduce((t, r) => t + r.sale, 0);
+      const totalCollection = report.reduce((t, r) => t + r.collection, 0);
+      const totalVisits = report.reduce((t, r) => t + r.visits, 0);
+
+      return `
+        <div class="min-h-screen flex flex-col md:flex-row">
+          <aside class="no-print w-full md:w-64 bg-slate-900 text-white p-5 flex flex-col justify-between md:sticky md:top-0 md:h-screen md:overflow-y-auto">
+            <div>
+              <div class="pb-5 border-b border-slate-800">
+                <div class="brand-mark mb-3" aria-label="Salman Enterprises S logo">S</div>
+                <p class="text-xs uppercase tracking-wider text-blue-400 font-semibold">Live ERP</p>
+                <h2 class="text-lg font-bold leading-snug mt-1">${esc(state.brandName)}</h2>
+                <p class="text-xs text-slate-400 mt-1">${esc(user.name)} (${esc(user.role)})</p>
+              </div>
+
+              <nav class="mt-5 flex md:block gap-2 md:space-y-1.5 overflow-x-auto pb-1 text-sm">
+                ${navBtn('dashboard', '🎯 Target &amp; Achievement')}
+                ${navBtn('attendance', '📍 Attendance &amp; Shop Visits')}
+                ${navBtn('report', '📊 Shop Sale &amp; Collection')}
+                ${isAdmin ? `
+                  ${navBtn('users', '1. Manage Staff &amp; Logins')}
+                  ${navBtn('shops', '2. Shops &amp; Salesman Mapping')}
+                  ${navBtn('location', 'Base Office GPS')}
+                  ${navBtn('months', '🗓️ Month Data &amp; Delete')}
+                ` : ''}
+              </nav>
+            </div>
+
+            <div class="pt-6 border-t border-slate-800 space-y-2">
+              ${syncBadge()}
+              ${isAdmin ? `<button id="exportCsvBtn" class="w-full py-2 px-3 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold cursor-pointer">Export Attendance CSV (Salary)</button>` : ''}
+              <button id="logoutBtn" class="w-full py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold cursor-pointer">
+                Sign Out
+              </button>
+            </div>
+          </aside>
+
+          <main class="flex-1 p-5 md:p-8 space-y-6">
+            ${state.statusBanner ? `
+              <div class="no-print p-4 rounded-xl bg-blue-50 border border-blue-200 text-sm text-blue-900 flex items-center justify-between gap-4">
+                <span>${esc(state.statusBanner)}</span>
+                <button id="clearBannerBtn" class="text-xs font-semibold underline cursor-pointer">Dismiss</button>
+              </div>
+            ` : ''}
+
+            ${tab === 'dashboard' ? renderAchievement(user) : ''}
+            ${isAdmin && tab === 'months' ? renderMonths() : ''}
+
+            ${tab === 'attendance' ? `
+              ${isAdmin ? renderHolidayManager() : ''}
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+                  <div class="flex items-center justify-between">
+                    <h3 class="text-lg font-bold text-slate-900">Office Attendance (${state.geofenceRadiusMeters}m)</h3>
+                    <span class="text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 font-medium">${todayKey()}</span>
+                  </div>
+                  <p class="text-sm text-slate-600">
+                    Office: <strong>${esc(state.baseOffice.name)}</strong>.
+                    Check-in and check-out work only within ${state.geofenceRadiusMeters}m of the office, Monday to Saturday except assigned holidays. Agar check-out bhool gaye to <strong>7:30 PM par auto check-out</strong> ho jayega.
+                  </p>
+                  <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-sm space-y-1">
+                    <div><strong>Today's Check-In:</strong> ${todayRec?.checkInAt ? new Date(todayRec.checkInAt).toLocaleTimeString('en-IN') + ` (${todayRec.checkInDistance}m)` : 'Not yet marked'}</div>
+                    <div><strong>Today's Check-Out:</strong> ${todayRec?.checkOutAt ? new Date(todayRec.checkOutAt).toLocaleTimeString('en-IN') + (todayRec.autoCheckout ? '' : ` (${todayRec.checkOutDistance}m)`) : 'Pending'}${todayRec?.autoCheckout ? ' <span class="text-xs text-amber-600 font-semibold">(auto 7:30 PM)</span>' : ''}</div>
+                    <div><strong>Shift Duration:</strong> ${todayRec ? formatDuration(todayRec.checkInAt, todayRec.checkOutAt) : '0h 0m'}</div>
+                    ${dayOffInfo(todayKey()) ? `<div class="mt-2 rounded-lg bg-amber-50 border border-amber-200 p-2 text-amber-800 font-semibold">${esc(dayOffInfo(todayKey()).label)} — no check-in or check-out required today.</div>` : ''}
+                  </div>
+                  ${dayOffInfo(todayKey()) ? '' : `<div class="flex flex-wrap gap-3">
+                    <button id="checkInBtn" class="px-4 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold cursor-pointer">Office Check-In</button>
+                    <button id="checkOutBtn" class="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-sm font-semibold cursor-pointer">Office Check-Out</button>
+                  </div>`}
+                </div>
+
+                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+                  <h3 class="text-lg font-bold text-slate-900">Log Shop Visit</h3>
+                  ${myShops.length ? `
+                    <form id="visitForm" class="space-y-3">
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Shop ${isAdmin ? '(all shops)' : '(your shops)'}</label>
+                        <select id="visitShopId" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm">
+                          ${myShops.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}${s.area ? ' — ' + esc(s.area) : ''}</option>`).join('')}
+                        </select>
+                      </div>
+                      <div class="grid grid-cols-2 gap-3">
+                        <div>
+                          <label class="block text-sm font-medium text-slate-700 mb-1">Sale Today (₹)</label>
+                          <input id="visitSale" type="number" min="0" step="any" placeholder="0" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                        </div>
+                        <div>
+                          <label class="block text-sm font-medium text-slate-700 mb-1">Collection (₹)</label>
+                          <input id="visitCollection" type="number" min="0" step="any" placeholder="0" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                        </div>
+                      </div>
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Notes (optional)</label>
+                        <input id="visitNotes" type="text" placeholder="e.g., 5x phone order, cheque next week"
+                          class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                      </div>
+                      <button type="submit" class="px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold cursor-pointer">
+                        Capture GPS &amp; Save Visit
+                      </button>
+                    </form>
+                  ` : `
+                    <p class="text-sm text-slate-500">
+                      ${isAdmin ? 'No shops created yet. Go to "2. Shops &amp; Salesman Mapping" to add shops.' : 'No shop is mapped to you yet. Please ask the admin.'}
+                    </p>
+                  `}
+                </div>
+              </div>
+
+              ${!isAdmin ? `
+                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                  <h3 class="text-lg font-bold text-slate-900 mb-3">My Shops (${myShops.length})</h3>
+                  <div class="flex flex-wrap gap-2 text-sm">
+                    ${myShops.length ? myShops.map((s) => `
+                      <span class="px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200">${esc(s.name)}${s.area ? ' · ' + esc(s.area) : ''}</span>
+                    `).join('') : '<span class="text-slate-400">None</span>'}
+                  </div>
+                </div>
+              ` : ''}
+
+              <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                <h3 class="text-lg font-bold text-slate-900 mb-3">Shop Visit Log</h3>
+                <div class="space-y-2 text-sm">
+                  ${visibleVisits.length ? visibleVisits.slice(0, 60).map((v) => `
+                    <div class="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-wrap justify-between gap-2">
+                      <div>
+                        <span class="font-semibold">${esc(v.userName)}</span> visited <strong>${esc(v.shopName)}</strong>
+                        ${v.distanceToShop !== null && v.distanceToShop !== undefined ? `(${v.distanceToShop}m from pin)` : ''}
+                        ${v.lat ? `<a href="${esc(mapsLink(v.lat, v.lng))}" target="_blank" rel="noopener" class="text-xs text-blue-700 underline">📍 map</a>` : ''}
+                        <div class="mt-1">
+                          Sale: <strong>${inr(v.saleAmount)}</strong> &nbsp;•&nbsp; Collection: <strong>${inr(v.collectionAmount)}</strong>
+                          ${v.notes ? ` &nbsp;•&nbsp; <span class="text-slate-600">${esc(v.notes)}</span>` : ''}
+                        </div>
+                      </div>
+                      <span class="text-xs text-slate-500">${new Date(v.loggedAt).toLocaleString('en-IN')}</span>
+                    </div>
+                  `).join('') : `<p class="text-slate-400">No shop visits logged yet.</p>`}
+                </div>
+              </div>
+
+              <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 class="text-lg font-bold text-slate-900">Attendance &amp; Shift Log</h3>
+                  ${isAdmin ? `<button id="exportCsvBtnInline" class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold hover:bg-slate-50 cursor-pointer">Download CSV for Salary</button>` : ''}
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm text-left border-collapse">
+                    <thead>
+                      <tr class="border-b border-slate-200 text-slate-500">
+                        <th class="py-2.5 pr-4">Date</th>
+                        <th class="py-2.5 pr-4">Worker</th>
+                        <th class="py-2.5 pr-4">Check-In</th>
+                        <th class="py-2.5 pr-4">Check-Out</th>
+                        <th class="py-2.5 pr-4">Duration</th>
+                        <th class="py-2.5">GPS Dist</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${visibleAttendance.length ? visibleAttendance.map((r) => `
+                        <tr class="border-b border-slate-100">
+                          <td class="py-2.5 pr-4">${esc(r.date)}</td>
+                          <td class="py-2.5 pr-4 font-medium">${esc(r.userName)}</td>
+                          <td class="py-2.5 pr-4">${r.checkInAt ? new Date(r.checkInAt).toLocaleTimeString('en-IN') : '-'}</td>
+                          <td class="py-2.5 pr-4">${r.checkOutAt ? new Date(r.checkOutAt).toLocaleTimeString('en-IN') + (r.autoCheckout ? ' <span class="text-xs text-amber-600">(auto)</span>' : '') : 'Open'}</td>
+                          <td class="py-2.5 pr-4 font-semibold">${formatDuration(r.checkInAt, r.checkOutAt)}</td>
+                          <td class="py-2.5 text-slate-600">In: ${r.checkInDistance ?? '-'}m / Out: ${r.checkOutDistance ?? '-'}m</td>
+                        </tr>
+                      `).join('') : `
+                        <tr><td colspan="6" class="py-6 text-center text-slate-400">No attendance entries recorded yet.</td></tr>
+                      `}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              ${renderAbsenceSummary(user)}
+            ` : ''}
+
+            ${tab === 'report' ? `
+              <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <h3 class="text-lg font-bold text-slate-900">Shop-wise Sale &amp; Collection</h3>
+                  ${isAdmin ? `<button id="exportReportBtn" class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold hover:bg-slate-50 cursor-pointer">Download Report CSV</button><button id="exportVisitsBtn" class="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold hover:bg-slate-50 cursor-pointer">Visit-wise CSV (with GPS)</button>` : ''}
+                </div>
+
+                <div class="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">From</label>
+                    <input id="reportFrom" type="date" value="${esc(ui.from)}" class="px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-slate-600 mb-1">To</label>
+                    <input id="reportTo" type="date" value="${esc(ui.to)}" class="px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                  </div>
+                  <button data-range="today" class="range-btn px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold cursor-pointer">Today</button>
+                  <button data-range="month" class="range-btn px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold cursor-pointer">This Month</button>
+                  <button data-range="all" class="range-btn px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold cursor-pointer">All Time</button>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div class="p-4 rounded-xl bg-blue-50 border border-blue-100">
+                    <div class="text-xs text-blue-700 font-semibold">Total Sale</div>
+                    <div class="text-xl font-bold text-slate-900 mt-1">${inr(totalSale)}</div>
+                  </div>
+                  <div class="p-4 rounded-xl bg-emerald-50 border border-emerald-100">
+                    <div class="text-xs text-emerald-700 font-semibold">Total Collection</div>
+                    <div class="text-xl font-bold text-slate-900 mt-1">${inr(totalCollection)}</div>
+                  </div>
+                  <div class="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                    <div class="text-xs text-slate-600 font-semibold">Visits</div>
+                    <div class="text-xl font-bold text-slate-900 mt-1">${totalVisits}</div>
+                  </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm text-left border-collapse">
+                    <thead>
+                      <tr class="border-b border-slate-200 text-slate-500">
+                        <th class="py-2.5 pr-4">Shop</th>
+                        <th class="py-2.5 pr-4">Salesman</th>
+                        <th class="py-2.5 pr-4 text-right">Visits</th>
+                        <th class="py-2.5 pr-4 text-right">Sale</th>
+                        <th class="py-2.5 text-right">Collection</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${report.length ? report.map((r) => `
+                        <tr class="border-b border-slate-100">
+                          <td class="py-2.5 pr-4 font-medium">${esc(r.name)}${r.area ? `<div class="text-xs text-slate-500">${esc(r.area)}</div>` : ''}</td>
+                          <td class="py-2.5 pr-4">${esc(r.salesman)}</td>
+                          <td class="py-2.5 pr-4 text-right">${r.visits}</td>
+                          <td class="py-2.5 pr-4 text-right font-semibold">${inr(r.sale)}</td>
+                          <td class="py-2.5 text-right font-semibold">${inr(r.collection)}</td>
+                        </tr>
+                      `).join('') : `
+                        <tr><td colspan="5" class="py-6 text-center text-slate-400">No shops or visits to show.</td></tr>
+                      `}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ` : ''}
+
+            ${isAdmin && tab === 'users' ? `
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+                  <h3 class="text-lg font-bold text-slate-900">Step 1: Create Staff / Salesman Login</h3>
+                  <form id="createUserForm" class="space-y-3">
+                    <div>
+                      <label class="block text-sm font-medium text-slate-700 mb-1">Full Name</label>
+                      <input id="newUserName" type="text" required placeholder="e.g., Rahul Verma" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-slate-700 mb-1">Email / Login ID</label>
+                      <input id="newUserEmail" type="email" required placeholder="rahul@salmanenterprises.in" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-slate-700 mb-1">Password</label>
+                      <input id="newUserPassword" type="text" required placeholder="Set staff password" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Role</label>
+                        <select id="newUserRole" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm">
+                          <option value="Field Sales">Field Sales</option>
+                          <option value="Admin">Admin</option>
+                          <option value="Staff">Staff</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Daily Salary (INR)</label>
+                        <input id="newUserSalary" type="number" min="0" value="600" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                      </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Monthly Sale Target (₹)</label>
+                        <input id="newUserTargetSale" type="number" min="0" value="0" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                      </div>
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Monthly Collection Target (₹)</label>
+                        <input id="newUserTargetColl" type="number" min="0" value="0" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                      </div>
+                    </div>
+                    <button type="submit" class="px-4 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold cursor-pointer">
+                      Save Account
+                    </button>
+                  </form>
+                </div>
+
+                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-3">
+                  <h3 class="text-lg font-bold text-slate-900">Active Accounts</h3>
+                  ${state.users.map((u) => `
+                    <div class="p-3 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-2 text-sm">
+                      <div>
+                        <div class="font-semibold">${esc(u.name)} <span class="text-xs text-blue-700">(${esc(u.role)})</span></div>
+                        <div class="text-xs text-slate-500">${esc(u.email)} • Rate: ₹${u.salaryPerDay || 0}/day</div>
+                        <div class="text-xs text-slate-500">Shops: ${state.shops.filter((s) => s.salesmanId === u.id).length}</div>
+                        <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                          <input type="number" min="0" data-tsale="${esc(u.id)}" value="${u.targetSale || 0}" title="Monthly sale target" placeholder="Sale target" class="w-24 px-2 py-1 rounded border border-slate-300 text-xs" />
+                          <input type="number" min="0" data-tcoll="${esc(u.id)}" value="${u.targetCollection || 0}" title="Monthly collection target" placeholder="Coll. target" class="w-24 px-2 py-1 rounded border border-slate-300 text-xs" />
+                          <button data-save-target="${esc(u.id)}" class="save-target-btn text-xs text-emerald-700 font-semibold hover:underline cursor-pointer">Save Target</button>
+                        </div>
+                      </div>
+                      <div class="flex flex-col items-end gap-1">
+                        <button data-pass-user="${esc(u.id)}" class="pass-user-btn text-xs text-blue-700 font-semibold hover:underline cursor-pointer">Change Password</button>
+                        ${u.id !== 'admin-1' ? `<button data-remove-user="${esc(u.id)}" class="remove-user-btn text-xs text-red-600 font-semibold hover:underline cursor-pointer">Remove</button>` : `<span class="text-xs text-slate-400">Primary</span>`}
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+
+            ${isAdmin && tab === 'shops' ? `
+              <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4 lg:col-span-1">
+                  <h3 class="text-lg font-bold text-slate-900">Step 2: Add Shop &amp; Map Salesman</h3>
+                  <form id="createShopForm" class="space-y-3">
+                    <div>
+                      <label class="block text-sm font-medium text-slate-700 mb-1">Shop Name</label>
+                      <input id="newShopName" type="text" required placeholder="e.g., Yashi Telecom" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-slate-700 mb-1">Area</label>
+                      <input id="newShopArea" type="text" placeholder="e.g., Civil Lines" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-slate-700 mb-1">Salesman</label>
+                      <select id="newShopSalesman" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm">
+                        <option value="">— Unassigned —</option>
+                        ${assignableUsers.map((u) => `<option value="${esc(u.id)}">${esc(u.name)} (${esc(u.role)})</option>`).join('')}
+                      </select>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Latitude (optional)</label>
+                        <input id="newShopLat" type="number" step="any" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                      </div>
+                      <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Longitude (optional)</label>
+                        <input id="newShopLng" type="number" step="any" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                      </div>
+                    </div>
+                    <p id="shopGpsHint" class="text-xs text-slate-500">Standing at the shop? Tap the button to fill the location.</p>
+                    <div class="flex flex-wrap gap-3">
+                      <button type="button" id="captureShopGpsBtn" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold cursor-pointer">
+                        Use My Current GPS
+                      </button>
+                      <button type="submit" class="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold cursor-pointer">
+                        Save Shop
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-3 lg:col-span-2">
+                  <h3 class="text-lg font-bold text-slate-900">All Shops (${state.shops.length})</h3>
+                  <p class="text-xs text-slate-500">Change the salesman from the dropdown any time. The shop moves to that salesman's login immediately. Old visit records stay as they were.</p>
+                  <div class="space-y-2">
+                    ${state.shops.length ? state.shops.map((s) => `
+                      <div class="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-sm">
+                        <div class="min-w-0">
+                          <div class="font-semibold">${esc(s.name)}</div>
+                          <div class="text-xs text-slate-500">${esc(s.area || 'No area')} • ${s.lat !== null && s.lng !== null ? 'GPS pin saved' : 'No GPS pin'}</div>
+                        </div>
+                        <div class="flex items-center gap-3">
+                          <select data-shop-assign="${esc(s.id)}" class="shop-assign-select px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm">
+                            <option value="">— Unassigned —</option>
+                            ${assignableUsers.map((u) => `<option value="${esc(u.id)}" ${u.id === s.salesmanId ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
+                          </select>
+                          <button data-remove-shop="${esc(s.id)}" class="remove-shop-btn text-xs text-red-600 font-semibold hover:underline cursor-pointer">Remove</button>
+                        </div>
+                      </div>
+                    `).join('') : '<p class="text-slate-400 text-sm">No shops yet. Add your first shop on the left.</p>'}
+                  </div>
+                </div>
+              </div>
+            ` : ''}
+
+            ${isAdmin && tab === 'location' ? `
+              <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4 max-w-xl">
+                <h3 class="text-lg font-bold text-slate-900">Base Office GPS Coordinates &amp; Geofence</h3>
+                <form id="officePinForm" class="space-y-3">
+                  <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Office Name</label>
+                    <input id="officeNameInput" type="text" value="${esc(state.baseOffice.name)}" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                  </div>
+                  <div class="grid grid-cols-2 gap-3">
+                    <div>
+                      <label class="block text-sm font-medium text-slate-700 mb-1">Latitude</label>
+                      <input id="officeLatInput" type="number" step="any" value="${state.baseOffice.lat}" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-slate-700 mb-1">Longitude</label>
+                      <input id="officeLngInput" type="number" step="any" value="${state.baseOffice.lng}" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Allowed Radius (Meters)</label>
+                    <input id="radiusInput" type="number" min="10" max="500" value="${state.geofenceRadiusMeters}" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm" />
+                  </div>
+                  <p id="officeGpsHint" class="text-xs text-slate-500">Standing at the office? Tap "Use My Current GPS", then "Save Office Pin".</p>
+                  <div class="flex flex-wrap gap-3 pt-1">
+                    <button type="button" id="captureCurrentOfficeBtn" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-sm font-semibold cursor-pointer">
+                      Use My Current GPS Location
+                    </button>
+                    <button type="submit" class="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold cursor-pointer">
+                      Save Office Pin
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ` : ''}
+          </main>
+        </div>
+      `;
+    }
+
+    function render() {
+      const root = document.getElementById('app');
+      const user = currentUser();
+      root.innerHTML = user ? renderDashboard(user) : renderLogin();
+      if (state.successToast && user) {
+        const toast = document.createElement('div');
+        toast.className = 'success-toast';
+        toast.innerHTML = '<span class="tick">✓</span><span class="font-semibold"></span>';
+        toast.querySelector('span.font-semibold').textContent = state.successToast;
+        root.appendChild(toast);
+        state.successToast = '';
+        window.setTimeout(() => toast.remove(), 4200);
+      }
+
+      const loginForm = document.getElementById('loginForm');
+      if (loginForm) {
+        loginForm.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const email = document.getElementById('loginEmail').value.trim().toLowerCase();
+          const password = document.getElementById('loginPassword').value;
+          const found = state.users.find(
+            (u) => u.active && u.email.toLowerCase() === email && u.password === password
+          );
+          if (!found) {
+            state.loginError = 'Invalid email or password.';
+            render();
+            return;
+          }
+          state.loginError = '';
+          state.currentUserId = found.id;
+          try { localStorage.setItem(SESSION_KEY, found.id); } catch (_) {}
+          state.activeTab = 'dashboard';
+          state.statusBanner = `Signed in as ${found.name}.`;
+          saveState();
+        });
+      }
+
+      document.querySelectorAll('.nav-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.activeTab = btn.getAttribute('data-tab');
+          render();
+        });
+      });
+
+      bindExtras();
+
+      const logoutBtn = document.getElementById('logoutBtn');
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', () => {
+          state.currentUserId = null;
+          try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
+          state.statusBanner = '';
+          saveState();
+        });
+      }
+
+      const clearBannerBtn = document.getElementById('clearBannerBtn');
+      if (clearBannerBtn) {
+        clearBannerBtn.addEventListener('click', () => {
+          state.statusBanner = '';
+          render();
+        });
+      }
+
+      const checkInBtn = document.getElementById('checkInBtn');
+      if (checkInBtn) checkInBtn.addEventListener('click', handleCheckIn);
+
+      const checkOutBtn = document.getElementById('checkOutBtn');
+      if (checkOutBtn) checkOutBtn.addEventListener('click', handleCheckOut);
+
+      const visitForm = document.getElementById('visitForm');
+      if (visitForm) visitForm.addEventListener('submit', handleLogVisit);
+
+      ['exportCsvBtn', 'exportCsvBtnInline'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', () => exportAttendanceCsv());
+      });
+
+      const exportReportBtn = document.getElementById('exportReportBtn');
+      if (exportReportBtn) exportReportBtn.addEventListener('click', exportShopReportCsv);
+
+      // report date filters
+      const fromEl = document.getElementById('reportFrom');
+      if (fromEl) fromEl.addEventListener('change', () => { ui.from = fromEl.value; render(); });
+      const toEl = document.getElementById('reportTo');
+      if (toEl) toEl.addEventListener('change', () => { ui.to = toEl.value; render(); });
+      document.querySelectorAll('.range-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const r = btn.getAttribute('data-range');
+          const now = new Date();
+          if (r === 'today') { ui.from = todayKey(); ui.to = todayKey(); }
+          else if (r === 'month') { ui.from = dateKeyOf(new Date(now.getFullYear(), now.getMonth(), 1)); ui.to = todayKey(); }
+          else { ui.from = ''; ui.to = ''; }
+          render();
+        });
+      });
+
+      // office pin
+      const captureBtn = document.getElementById('captureCurrentOfficeBtn');
+      if (captureBtn) {
+        captureBtn.addEventListener('click', async () => {
+          const hint = document.getElementById('officeGpsHint');
+          try {
+            hint.textContent = 'Getting GPS location...';
+            const gps = await getLiveGps();
+            document.getElementById('officeLatInput').value = gps.lat;
+            document.getElementById('officeLngInput').value = gps.lng;
+            hint.textContent = `Captured (${gps.lat}, ${gps.lng}). Now tap "Save Office Pin".`;
+          } catch (err) {
+            hint.textContent = err.message;
+          }
+        });
+      }
+
+      const officeForm = document.getElementById('officePinForm');
+      if (officeForm) {
+        officeForm.addEventListener('submit', (e) => {
+          e.preventDefault();
+          state.baseOffice.name = document.getElementById('officeNameInput').value.trim() || state.baseOffice.name;
+          state.baseOffice.lat = Number(document.getElementById('officeLatInput').value);
+          state.baseOffice.lng = Number(document.getElementById('officeLngInput').value);
+          state.geofenceRadiusMeters = Number(document.getElementById('radiusInput').value) || 50;
+          state.statusBanner = `Saved Base Office pin (${state.baseOffice.lat}, ${state.baseOffice.lng}) with ${state.geofenceRadiusMeters}m radius.`;
+          saveConfig();
+        });
+      }
+
+      // staff
+      const createUserForm = document.getElementById('createUserForm');
+      if (createUserForm) {
+        createUserForm.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const name = document.getElementById('newUserName').value.trim();
+          const email = document.getElementById('newUserEmail').value.trim().toLowerCase();
+          const password = document.getElementById('newUserPassword').value;
+          const role = document.getElementById('newUserRole').value;
+          const salaryPerDay = Number(document.getElementById('newUserSalary').value) || 0;
+          if (state.users.some((u) => u.email.toLowerCase() === email)) {
+            state.statusBanner = `An account with ${email} already exists.`;
+            render();
+            return;
+          }
+          state.users.push({
+            id: 'u-' + Date.now(),
+            name,
+            email,
+            password,
+            role,
+            salaryPerDay,
+            targetSale: Math.max(0, Number(document.getElementById('newUserTargetSale').value) || 0),
+            targetCollection: Math.max(0, Number(document.getElementById('newUserTargetColl').value) || 0),
+            active: true
+          });
+          state.statusBanner = `Created account for ${name} (${email}). Next: add shops and map them to this person.`;
+          saveConfig();
+        });
+      }
+
+      document.querySelectorAll('.pass-user-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const uid = btn.getAttribute('data-pass-user');
+          const u = state.users.find((x) => x.id === uid);
+          if (!u) return;
+          const np = window.prompt(`New password for ${u.name}:`);
+          if (!np || !np.trim()) return;
+          u.password = np.trim();
+          state.statusBanner = `Password changed for ${u.name}.`;
+          saveConfig();
+        });
+      });
+
+      document.querySelectorAll('.remove-user-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const uid = btn.getAttribute('data-remove-user');
+          const u = state.users.find((x) => x.id === uid);
+          if (!u || !window.confirm(`Remove ${u.name}? Their shops will become Unassigned.`)) return;
+          state.users = state.users.filter((x) => x.id !== uid);
+          state.shops.forEach((s) => { if (s.salesmanId === uid) s.salesmanId = ''; });
+          state.statusBanner = `Removed ${u.name}. Their shops are now Unassigned.`;
+          saveConfig();
+        });
+      });
+
+      // shops
+      const captureShopBtn = document.getElementById('captureShopGpsBtn');
+      if (captureShopBtn) {
+        captureShopBtn.addEventListener('click', async () => {
+          const hint = document.getElementById('shopGpsHint');
+          try {
+            hint.textContent = 'Getting GPS location...';
+            const gps = await getLiveGps();
+            document.getElementById('newShopLat').value = gps.lat;
+            document.getElementById('newShopLng').value = gps.lng;
+            hint.textContent = `Captured (${gps.lat}, ${gps.lng}).`;
+          } catch (err) {
+            hint.textContent = err.message;
+          }
+        });
+      }
+
+      const createShopForm = document.getElementById('createShopForm');
+      if (createShopForm) {
+        createShopForm.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const name = document.getElementById('newShopName').value.trim();
+          const area = document.getElementById('newShopArea').value.trim();
+          const salesmanId = document.getElementById('newShopSalesman').value;
+          const latRaw = document.getElementById('newShopLat').value;
+          const lngRaw = document.getElementById('newShopLng').value;
+          if (!name) return;
+          state.shops.push({
+            id: 'sh-' + Date.now(),
+            name,
+            area,
+            lat: latRaw === '' ? null : Number(latRaw),
+            lng: lngRaw === '' ? null : Number(lngRaw),
+            salesmanId
+          });
+          state.statusBanner = `Shop "${name}" saved and mapped to ${salesmanName(salesmanId)}.`;
+          saveConfig();
+        });
+      }
+
+      document.querySelectorAll('.shop-assign-select').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const sid = sel.getAttribute('data-shop-assign');
+          const shop = state.shops.find((s) => s.id === sid);
+          if (!shop) return;
+          shop.salesmanId = sel.value;
+          state.statusBanner = `"${shop.name}" is now mapped to ${salesmanName(shop.salesmanId)}.`;
+          saveConfig();
+        });
+      });
+
+      document.querySelectorAll('.remove-shop-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const sid = btn.getAttribute('data-remove-shop');
+          const shop = state.shops.find((s) => s.id === sid);
+          if (!shop || !window.confirm(`Remove shop "${shop.name}"? Past visit records are kept.`)) return;
+          state.shops = state.shops.filter((s) => s.id !== sid);
+          state.statusBanner = `Removed shop "${shop.name}".`;
+          saveConfig();
+        });
+      });
+    }
+
+    ui.today = todayKey();
+    setInterval(() => {
+      const tag = document.activeElement && document.activeElement.tagName;
+      const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(tag);
+      if (runAutoCheckout()) { saveState(); return; }   // saves + syncs to cloud
+      if (ui.today !== todayKey()) {                     // new day: refresh today's check-in/out view
+        ui.today = todayKey();
+        if (!typing) render();
+      }
+    }, 30000);
+
+    render();
+  </script>
+
+  <script>
+    (function enableMongoCloudSync() {
+      const SYNC_INTERVAL_MS = 12000;
+      const UI_KEYS = ['currentUserId', 'activeTab', 'loginError', 'statusBanner'];
+      let busy = false;
+      let again = false;
+
+      function setStatus(bad, text) {
+        window.__syncBad = bad;
+        window.__syncText = text;
+        const el = document.getElementById('syncStatus');
+        if (el) {
+          el.textContent = text;
+          const onLogin = !currentUser();
+          el.className = 'text-xs break-words ' + (bad ? (onLogin ? 'text-red-600' : 'text-red-400') : (onLogin ? 'text-emerald-700' : 'text-emerald-400'));
+        }
+      }
+
+      function clean(s) {
+        const c = { ...s };
+        UI_KEYS.forEach((k) => delete c[k]);
+        return c;
+      }
+
+      // JSON text with sorted keys, so two equal states always compare equal
+      function stable(v) {
+        if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+        if (v && typeof v === 'object') {
+          return '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+        }
+        return JSON.stringify(v === undefined ? null : v);
+      }
+
+      function unionById(localList, cloudList, timeKey, preferCloud) {
+        const map = new Map();
+        (cloudList || []).forEach((r) => map.set(r.id, r));
+        (localList || []).forEach((r) => {
+          const c = map.get(r.id);
+          map.set(r.id, c && preferCloud(r, c) ? c : r);
+        });
+        return [...map.values()].sort((a, b) => String(b[timeKey] || '').localeCompare(String(a[timeKey] || '')));
+      }
+
+      // Records (attendance, visits) are always combined, nothing is lost.
+      // Settings (staff, shops, mapping, office pin) come from whichever side was changed last.
+      function merge(local, cloud) {
+        if (!cloud) return local;
+        const localAt = Number(local.configAt) || 0;
+        const cloudAt = Number(cloud.configAt) || 0;
+        const base = localAt > cloudAt ? clean(local) : clean(cloud);
+        const merged = {
+          ...base,
+          configAt: Math.max(localAt, cloudAt),
+          attendance: unionById(local.attendance, cloud.attendance, 'checkInAt',
+            (l, c) => !!c.checkOutAt && !l.checkOutAt),
+          visits: unionById(local.visits, cloud.visits, 'loggedAt', () => false),
+          purges: unionPurges(local.purges, cloud.purges)
+        };
+        UI_KEYS.forEach((k) => { merged[k] = local[k]; });
+        return normalizeState(merged);
+      }
+
+      async function errorText(res) {
+        let detail = '';
+        try { const j = await res.json(); detail = j && j.error ? j.error : ''; } catch (_) {}
+        if (res.status === 404) return 'Cloud error 404: api folder not found on the website (check GitHub api folder)';
+        return 'Cloud error ' + res.status + (detail ? ': ' + detail : '');
+      }
+
+      async function fetchCloud() {
+        try {
+          const res = await fetch('/api/state', { cache: 'no-store' });
+          if (!res.ok) return { failed: true, msg: await errorText(res) };
+          const payload = await res.json();
+          return { failed: false, state: payload && payload.state ? payload.state : null };
+        } catch (_) {
+          return { failed: true, msg: 'Cloud: cannot reach server (check internet). Data NOT saved online yet.' };
+        }
+      }
+
+      async function syncOnce() {
+        if (busy) { again = true; return; }
+        busy = true;
+        try {
+          const got = await fetchCloud();
+          if (got.failed) { setStatus(true, got.msg); return; }
+          const cloud = got.state;
+
+          const merged = merge(state, cloud);
+          const mergedStable = stable(clean(merged));
+
+          if (mergedStable !== stable(clean(state))) {
+            state = merged;
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+            const tag = document.activeElement && document.activeElement.tagName;
+            const typing = ['INPUT', 'SELECT', 'TEXTAREA'].includes(tag);
+            if (!typing) render();
+          }
+
+          const cloudStable = cloud ? stable(clean(normalizeState(cloud))) : '';
+          const cloudHasLegacyPhotos = !!(cloud && Array.isArray(cloud.attendance) && cloud.attendance.some((a) => a && a.checkInPhoto));
+          if (mergedStable !== cloudStable || cloudHasLegacyPhotos) {
+            const res = await fetch('/api/state', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ state: clean(merged) })
+            });
+            if (!res.ok) { setStatus(true, await errorText(res)); return; }
+          }
+          setStatus(false, 'Cloud: saved online ✓ ' + new Date().toLocaleTimeString('en-IN'));
+        } catch (_) {
+          setStatus(true, 'Cloud: save failed (check internet). Data NOT saved online yet.');
+        } finally {
+          busy = false;
+          if (again) { again = false; setTimeout(syncOnce, 300); }
+        }
+      }
+
+      window.__pushErpCloudState = syncOnce;
+
+      window.addEventListener('load', () => {
+        syncOnce();
+        setInterval(syncOnce, SYNC_INTERVAL_MS);
+      });
+    })();
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+    }
+  </script>
+</body>
+</html>
