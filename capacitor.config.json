@@ -1,0 +1,6 @@
+{
+  "appId": "in.salmanenterprises.attendance",
+  "appName": "Salman Enterprises Attendance",
+  "webDir": "www",
+  "bundledWebRuntime": false
+}
